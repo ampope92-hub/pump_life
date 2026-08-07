@@ -1,38 +1,89 @@
-# Task configuration schema version
-version = "2.0"
-
-# Task metadata (author, difficulty, categorization)
-[metadata]
+name = "pump-life"
+category = "ML"
+subcategory = "Training"
+tags = ["rust", "smartcore", "cargo", "survival-analysis", "censoring"]
+languages = ["rust"]
+difficulty = "advanced"
+expert_time_estimate_hours = 10
 author_name = "anonymous"
 author_email = "anonymous"
-difficulty = "hard"
-category = "machine-learning"
-# Options for subcategories are: "long_context", "tool_specific", "api_integration", "db_interaction", "ui_building"
-subcategories = [ "tool_specific",]
-# The number of milestones in the task (can be zero if not a milestone task)
-number_of_milestones = 0
-# Size of the codebase: minimal -> 0-20 files, small -> 20+ files, large -> 200+ files
-codebase_size = "minimal"
-# Coding languages used in the oracle solution or required by the agent
-languages = [ "rust", "bash",]
-# For tool_specific, api_integration, and db_interaction subcategories, please include specific tool, api framework, or database software
-tags = [ "rust", "smartcore", "cargo", "regression", "survival-analysis", "censoring", "machine-learning",]
-# Estimated time to complete (minutes)
-expert_time_estimate_min = 75
-junior_time_estimate_min = 200
 
-# Verifier: runs the test script to check task completion
+difficulty_explanation = """
+The maintenance export records runtime_days for every pump, but for the 38% flagged
+still_running the seal had not failed yet, so that number is a lower bound on the life
+rather than the life. Fitting on the changed-out pumps alone — the obvious move, and the
+only one that needs no thought about what the flag means — is fitting the pumps that died
+young, and lands at R2 0.28 against a 0.33 bar. Taking runtime_days at face value across
+all rows is worse still, at -0.34. The bias is not merely a level shift: the fleet was
+built up in waves and the long-lived duty types and gentler fluids came online late, so
+they carry short observation windows and are the most likely to still be running.
+Discarding the censored rows therefore bends the coefficients, under-crediting exactly the
+setups that last longest, which is why no amount of model tuning recovers it. The work also
+happens in smartcore on an offline box with no Python data stack and no survival-analysis
+library, so the censored fit has to be built by hand.
+
+Calibrated across 5 generator seeds: the best wrong answer is 0.2969, the cohort route
+clears 0.3563 and the censored-likelihood route 0.4843, against a noise ceiling of 0.4959.
+Two independent routes clear the bar.
+"""
+
+solution_explanation = """
+The reference (solution/solve.sh) writes src/main.rs and runs the Cargo project. It fits a
+log-normal accelerated-failure-time model by EM over every row: each pass fits a linear
+model of log runtime, estimates the residual scale from the pumps that actually failed, and
+replaces each censored row's response with the expectation of a normal truncated at where
+that pump had got to, mu + sd*phi(a)/(1-Phi(a)). Ten passes converge. Rust's standard
+library has no error function, so the normal CDF is the Abramowitz & Stegun 26.2.17
+approximation. It scores 0.4922 against the 0.33 bar.
+
+A second honest route exists and also clears: restrict to install cohorts whose observation
+window is long enough that censoring is nearly complete (>= 800 days), and fit
+complete-case within those.
+"""
+
+verification_explanation = """
+The verifier runs in its own container. It collects the agent's crate sources
+(/app/predictor/src, Cargo.toml, Cargo.lock) and the shipped export (/app/data) as
+artifacts, drops them onto a prepared skeleton whose dependency tree is already compiled,
+and runs cargo build/run --release --offline itself. The graded predictions.csv is
+therefore always the output of a clean build of the agent's own code — a hand-written
+predictions file never reaches the grader.
+
+tests/test_outputs.py then runs six checks: the shipped export is unaltered (sha256), the
+schema, one-to-one coverage of the quoted pumps, that lives are numeric and physically
+plausible, that predictions are a real spread rather than a constant, and that R2 against
+tests/golden/test_labels.csv reaches 0.33. The golden labels live in the verifier image and
+are never present in the agent environment, so hardcoding is impossible by construction.
+Only pytest is installed, so the CSV reading and the R2 come from the standard library.
+"""
+
+relevant_experience = """
+I work on reliability and time-to-failure modelling for industrial equipment, where
+right-censoring is the standard trap: the maintenance system records how long a part has run
+so far, not how long it lasted, and treating the two as the same quietly biases every
+coefficient. Building this task meant implementing a log-normal AFT fit by EM from scratch
+in Rust — including a normal CDF, since the standard library has no error function — and
+verifying across five generated seeds that the naive complete-case fit cannot reach the bar
+under any amount of tuning, so the threshold separates method from effort.
+"""
+
+artifacts = [
+    "/app/predictor/src/",
+    "/app/predictor/Cargo.toml",
+    "/app/predictor/Cargo.lock",
+    "/app/data/",
+]
+
 [verifier]
-timeout_sec = 600.0
+timeout_sec = 600
+environment_mode = "separate"
 
-# Agent: limits how long the agent can run when attempting the task
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 3600
 
-# Sandbox environment limits
 [environment]
-allow_internet = false
-build_timeout_sec = 900.0
+network_mode = "no-network"
+build_timeout_sec = 900
 cpus = 2
 memory_mb = 6144
-storage_mb = 12288
+storage_mb = 10240
