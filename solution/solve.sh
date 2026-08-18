@@ -3,23 +3,32 @@ set -euo pipefail
 
 # Reference solution for pump_life.
 #
-# The catch is what runtime_days means. For a pump with still_running = 1 the
-# seal had NOT failed yet, so that number is a lower bound on its life, not the
-# life. Nearly 38% of the export is in that state. Fit on the changed-out pumps
-# only and you are fitting the pumps that died young, which lands around R2 0.28
-# and predicts an average life well under what the quote batch actually managed.
+# Two things have to be right, and the same defect in the data damages both.
 #
-# Worse, the install waves were not random: the long-lived duty types and the
-# gentler fluids came online late, so they have short windows and are the most
-# likely to still be running. Throwing the censored rows away therefore bends the
-# coefficients, not just the intercept. It under-credits exactly the setups that
-# last longest.
+# First, what runtime_days means. No flag says so: a pump whose seal has been changed
+# out has run for less time than it has been installed, while one still in service has
+# run for its whole window, so runtime_days == observed_window_days marks a life that
+# has not finished yet. 38% of the export is in that state. Fit the changed-out pumps
+# alone and you are fitting the ones that died young — R2 0.29 against a 0.36 bar — and
+# the install waves were not random, so it bends the coefficients rather than just the
+# intercept: the long-lived duty types and gentler fluids came online late, carry short
+# windows, and are the most likely to still be running.
 #
-# So: log-normal accelerated failure time, fitted by EM over every row. Censored
-# rows enter each pass at the expectation of a normal truncated at where they had
-# got to, E[y | y > c] = mu + sd * phi(a)/(1 - Phi(a)), which pulls them up to
-# where that pump would plausibly have ended rather than pinning them at the
-# report date. Ten passes is plenty. Scores ~0.49 against a noise ceiling of 0.50.
+# Second, the service interval. It is the age by which a tenth of the pumps in a given
+# configuration have failed, i.e. the 0.10 quantile of that pump's own life distribution
+# — so it depends on the spread, not just the level. And the spread is not constant:
+# seal life on a rough pump is both shorter and less predictable, so sigma rises with
+# vibration. Assume one global sigma and the interval is far too long on smooth pumps
+# and too short on rough ones; the overall failure rate can still look close to 10%
+# while both ends are wrong, which is why coverage is checked within vibration bands.
+# Censoring makes the spread harder to recover than the level: the residuals still
+# visible are the ones that failed early.
+#
+# So: log-normal AFT with log-sigma linear in vibration, fitted by exact censored
+# maximum likelihood — failed pumps contribute their density, still-running pumps the
+# probability of surviving past where they had got to — by gradient ascent with a
+# backtracking step. Scores R2 0.479 with 9.2% realised coverage (7.6/10.2/9.8% across
+# the vibration terciles) against bars of 0.36 and 5.5-14.5% per band.
 
 # The model itself is solution/main.rs, next to this script — Rust is not a shell
 # language and 130 lines of it inside a heredoc is neither reviewable nor compilable

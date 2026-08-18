@@ -20,58 +20,84 @@ author_name = "anonymous"
 author_email = "anonymous"
 
 difficulty_explanation = """
-The maintenance export records runtime_days for every pump, but for the 38% flagged
-still_running the seal had not failed yet, so that number is a lower bound on the life
-rather than the life. Fitting on the changed-out pumps alone — the obvious move, and the
-only one that needs no thought about what the flag means — is fitting the pumps that died
-young, and lands at R2 0.28 against a 0.33 bar. Taking runtime_days at face value across
-all rows is worse still, at -0.34. The bias is not merely a level shift: the fleet was
-built up in waves and the long-lived duty types and gentler fluids came online late, so
-they carry short observation windows and are the most likely to still be running.
-Discarding the censored rows therefore bends the coefficients, under-crediting exactly the
-setups that last longest, which is why no amount of model tuning recovers it. The work also
-happens in smartcore on an offline box with no Python data stack and no survival-analysis
-library, so the censored fit has to be built by hand.
+Two quantities are graded and one defect in the data damages both, which is what makes this
+harder than either half alone.
 
-Calibrated across 5 generator seeds: the best wrong answer is 0.2969, the cohort route
-clears 0.3563 and the censored-likelihood route 0.4843, against a noise ceiling of 0.4959.
-Two independent routes clear the bar.
+The export records runtime_days for every pump, and no column says whether that run ended.
+A pump whose seal was changed out has run for less time than it has been installed; one
+still in service has run for its whole window, so runtime_days equals observed_window_days
+and its life is a lower bound rather than a life. 38% of the rows are in that state. Fitting
+the changed-out pumps alone — the obvious move — is fitting the pumps that died young and
+reaches R2 0.2873 against a 0.36 bar, and taking runtime_days at face value across all rows
+is far worse at -0.2347. The bias is not a level shift: the fleet was built up in waves and
+the long-lived duty types and gentler fluids came online late, so they carry short windows
+and are the most likely to be unfinished. Discarding those rows bends the coefficients
+against exactly the setups that last longest, so no amount of tuning recovers it.
+
+The service interval is where a correct-looking model still fails. It is the age by which a
+tenth of pumps in a configuration have failed — a lower quantile of that pump's own life
+distribution, so it depends on the spread and not just the level. The spread is not
+constant: seal life on a rough pump is both shorter and less predictable, and sigma rises
+with vibration across a three-fold range. Handle the censoring correctly but assume one
+global sigma and the mean predictions are fine (R2 0.4567, clearing the bar) while the
+interval is far too long for smooth pumps and too short for rough ones — 2.4% of the
+smoothest third fail before their quoted age against a 5.5% floor. Overall coverage still
+lands at 8.2%, which is why coverage is graded within vibration bands and not only fleet-
+wide. Censoring makes the spread harder to recover than the level, since the residuals still
+visible are the ones that failed early: the two axes interact rather than sitting side by
+side.
+
+Calibrated across 14 generator seeds; the shipped instance is seed 7 and the bars clear on
+every seed, including the tightest. Censoring-ignoring routes top out at R2 0.3211 against
+the 0.36 bar, the correct route floors at 0.3966. On the interval, the correct route holds
+7.6-12.4% across bands while every constant-sigma route falls below 3.7% on the smooth end.
+The work happens in smartcore on an offline box with no Python data stack and no survival
+library, so both the censored fit and the scale model are built by hand.
 
 The data is synthetic, generated from a log-normal life model with wave-structured install
-dates, but it reproduces the shape a real maintenance export has: the system records how
-long a part has run so far, not how long it lasted, and the fleet was not commissioned all
-at once. Reliability and maintenance engineers at pump rebuilders and industrial service
-contractors do this work — pricing service contracts from a maintenance history in which a
+dates and a vibration-dependent scale, but the shape is the one a real maintenance export
+has: the system records how long a part has run so far, the fleet was not commissioned all
+at once, and unstable machines are less predictable as well as shorter-lived. Reliability
+and maintenance engineers at pump rebuilders and industrial service contractors do this
+work — pricing service contracts and setting change-out intervals from a history in which a
 large share of the assets have not failed yet.
 
-Nothing about the trap is narrated to the agent, but nothing is withheld either: the data
-dictionary states that `still_running` marks a pump that was in service on the export date
-and that `runtime_days` is the run as of that date, and `observed_window_days` exposes the
-staggered install windows. The censoring and the cohort confounding are both derivable from
-the shipped files — what is not supplied is the inference that they matter.
+Nothing about either trap is narrated, and nothing is withheld: the data dictionary states
+that runtime_days is time on the seal rather than time since install and that the two
+coincide for some pumps and not others, observed_window_days exposes the staggered install
+windows, and vibration is a shipped column. Both the censoring and the varying spread are
+derivable from the shipped files. What is not supplied is the inference that they matter.
 """
 
 solution_explanation = """
-The reference (solution/solve.sh) writes src/main.rs and runs the Cargo project. It fits a
-log-normal accelerated-failure-time model by EM over every row: each pass fits a linear
-model of log runtime, estimates the residual scale from the pumps that actually failed, and
-replaces each censored row's response with the expectation of a normal truncated at where
-that pump had got to, mu + sd*phi(a)/(1-Phi(a)). Ten passes converge. Rust's standard
-library has no error function, so the normal CDF is the Abramowitz & Stegun 26.2.17
-approximation. It scores 0.4922 against the 0.33 bar.
+The reference (solution/solve.sh plus solution/main.rs beside it) fits a log-normal
+accelerated-failure-time model whose log-scale is itself linear in vibration, by exact
+censored maximum likelihood: pumps that failed contribute their density, pumps still running
+contribute the probability of surviving past where they had got to. Censoring is recovered
+without a flag, from runtime_days == observed_window_days. The likelihood is maximised by
+gradient ascent with a backtracking step from a complete-case start, using analytic
+gradients in both the mean and the scale — the design columns are standardised first, since
+one-hots and centred rpm differ by three orders of magnitude and no single step size serves
+both. Rust's standard library has no error function, so the normal CDF is the Abramowitz &
+Stegun 26.2.17 approximation.
 
-A second honest route exists and also clears: restrict to install cohorts whose observation
-window is long enough that censoring is nearly complete (>= 800 days), and fit
-complete-case within those.
+It then writes both quantities from the same fit: expected life as exp(mu + sigma^2/2), and
+the service interval as exp(mu + sigma * z) at z = Phi^-1(0.10). On the shipped instance it
+scores R2 0.4789 against the 0.36 bar, with 9.2% of pumps failing before their quoted
+interval and 7.5% / 10.2% / 9.7% across the three vibration bands, against a 5.5-14.5%
+requirement.
 """
 
 verification_explanation = """
 The verifier runs in its own container. It collects the agent's crate sources
 (/app/predictor/src, Cargo.toml, Cargo.lock) and the shipped export (/app/data) as
 artifacts, drops them onto a prepared skeleton whose dependency tree is already compiled,
-and runs cargo build/run --release --offline itself. The graded predictions.csv is
-therefore always the output of a clean build of the agent's own code — a hand-written
-predictions file never reaches the grader.
+and runs cargo build/run --release --offline itself. The graded predictions.csv is therefore
+always the output of a clean build of the agent's own code — a hand-written predictions file
+never reaches the grader. The image carries no prebuilt binary for the crate itself
+(cargo clean -p after the skeleton build) and test.sh stamps the collected sources before
+building, so cargo cannot mistake an uploaded source older than the image for one it has
+already compiled and quietly run the skeleton instead.
 
 Rebuilding the agent's crate means the verifier executes code the agent wrote, so that step
 is the one thing it does not do as root: test.sh hands the crate to an unprivileged user and
@@ -85,25 +111,42 @@ export is left read-only to the build user. Verified by four cheat arms — crat
 either copy of the labels, one that overwrites test_outputs.py, one that writes reward.txt
 directly — each of which compiles and then fails on permissions, scoring 0.
 
-tests/test_outputs.py then runs six checks: the shipped export is unaltered (sha256), the
-schema, one-to-one coverage of the quoted pumps, that lives are numeric and physically
-plausible, that predictions are a real spread rather than a constant, and that R2 against
-tests/golden/test_labels.csv reaches 0.33. That bar sits between the strongest wrong
-approach and the weakest correct one, both established by sweeping each route across
-several generator seeds: treating the censored records as failures peaks at 0.2969, while
-the weakest passing route (cohort-based) reaches 0.3563 and the EM route 0.4843, with the
-threshold frozen against the tightest seed. Only pytest is installed, so the CSV reading
-and the R2 come from the standard library.
+tests/test_outputs.py runs eight checks: the shipped export is unaltered (sha256), the
+schema is exactly pump_id,life_days,service_days, coverage of the quoted pumps is
+one-to-one, both columns are finite and physically plausible with the interval no later than
+the expected life, neither column is a constant, R2 against the withheld lives reaches 0.36,
+the share of pumps that failed before their quoted interval is within [6%,15%] of the 10%
+asked for, and that same share holds within [5.5%,14.5%] in each vibration tercile.
+
+The band check is the load-bearing one and was designed against attack rather than assumed.
+Realised coverage fleet-wide is a proxy a wrong answer can also satisfy, so it was attacked
+with the withheld truth in hand — strictly more than an agent can do: a single interval
+quoted for every pump, tuned to land on exactly 10%, and a fixed fraction of a good life
+prediction, tuned the same way. Both pass fleet-wide coverage and both are rejected by the
+bands (2.5% and 1.2% on the smooth third, 17.6% and 21.0% on the rough third). Every bar was
+frozen by sweeping each route across 14 generator seeds and placing it between the strongest
+wrong answer and the weakest correct one: R2 0.3211 wrong against 0.3966 correct, and on the
+interval a smooth-band floor of 5.5% against 3.6% wrong and 7.6% correct. The scored cohort
+is 6000 pumps so that a tercile carries 2000 — coverage is a binomial count, and at that size
+its sampling noise is ~0.7 points, which keeps every band edge about three standard
+deviations from both the correct route and the wrong ones. Only pytest is installed, so the
+CSV reading and the arithmetic come from the standard library.
 """
 
 relevant_experience = """
 I work on reliability and time-to-failure modelling for industrial equipment, where
 right-censoring is the standard trap: the maintenance system records how long a part has run
 so far, not how long it lasted, and treating the two as the same quietly biases every
-coefficient. Building this task meant implementing a log-normal AFT fit by EM from scratch
-in Rust — including a normal CDF, since the standard library has no error function — and
-verifying across five generated seeds that the naive complete-case fit cannot reach the bar
-under any amount of tuning, so the threshold separates method from effort.
+coefficient. The part I would point at here is the calibration discipline rather than the
+model. An earlier version of this task graded expected life alone against an R2 bar, and
+when I re-measured it with a competently specified complete-case fit — one-hot categoricals,
+centred numerics — that supposedly-wrong route cleared the bar on seven seeds out of eight.
+The trap had never been load-bearing. So this version grants every wrong route its best
+adversary, including routes handed the withheld answers to tune against, sweeps them across
+14 seeds, and only then places each bar between the strongest wrong answer and the weakest
+correct one. Building it meant implementing a heteroscedastic censored AFT fit from scratch
+in Rust, including the normal CDF and analytic likelihood gradients, since the standard
+library has no error function and there is no survival-analysis crate on the box.
 """
 
 [verifier]

@@ -18,10 +18,11 @@ maintenance history attached.
 | `impeller_mm` | asset register | impeller diameter |
 | `observed_window_days` | maintenance system | days between the pump's install date and the export date |
 | `runtime_days` | maintenance system | days the pump has run, as of the export date |
-| `still_running` | maintenance system | 1 if the pump was still in service on the export date, 0 if the seal had already been changed out |
 
 ## Notes on the export
 
-`runtime_days` is what the maintenance system holds against the pump on the export
-date. The quote batch is a separate cohort that has since been run to seal failure, so
-those pumps have a final number.
+`runtime_days` is what the maintenance system holds against the pump on the export date:
+time on the seal, not time since install. The two coincide for some pumps and not others.
+
+The quote batch is a separate cohort that has since been run to seal failure, so those
+pumps have a final number.
