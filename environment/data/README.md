@@ -23,10 +23,5 @@ maintenance history attached.
 ## Notes on the export
 
 `runtime_days` is what the maintenance system holds against the pump on the export
-date. For a pump whose seal has been changed out, that is the run it achieved. For one
-still in service, it is where the pump had got to when we pulled the report.
-
-Install dates are spread across the programme — the fleet was built up in waves, with
-the duty types and fluids coming online in a different order than they now sit in the
-book. The quote batch is a separate cohort that has since been run to seal failure, so
+date. The quote batch is a separate cohort that has since been run to seal failure, so
 those pumps have a final number.

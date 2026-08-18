@@ -36,6 +36,19 @@ library, so the censored fit has to be built by hand.
 Calibrated across 5 generator seeds: the best wrong answer is 0.2969, the cohort route
 clears 0.3563 and the censored-likelihood route 0.4843, against a noise ceiling of 0.4959.
 Two independent routes clear the bar.
+
+The data is synthetic, generated from a log-normal life model with wave-structured install
+dates, but it reproduces the shape a real maintenance export has: the system records how
+long a part has run so far, not how long it lasted, and the fleet was not commissioned all
+at once. Reliability and maintenance engineers at pump rebuilders and industrial service
+contractors do this work — pricing service contracts from a maintenance history in which a
+large share of the assets have not failed yet.
+
+Nothing about the trap is narrated to the agent, but nothing is withheld either: the data
+dictionary states that `still_running` marks a pump that was in service on the export date
+and that `runtime_days` is the run as of that date, and `observed_window_days` exposes the
+staggered install windows. The censoring and the cohort confounding are both derivable from
+the shipped files — what is not supplied is the inference that they matter.
 """
 
 solution_explanation = """
