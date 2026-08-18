@@ -60,12 +60,27 @@ and runs cargo build/run --release --offline itself. The graded predictions.csv 
 therefore always the output of a clean build of the agent's own code — a hand-written
 predictions file never reaches the grader.
 
+Rebuilding the agent's crate means the verifier executes code the agent wrote, so that step
+is the one thing it does not do as root: test.sh hands the crate to an unprivileged user and
+runs the build under it. The graded answer key is baked into the verifier image at
+/opt/golden, readable only by root. Harbor owns the /tests and /logs mounts at runtime, so
+permissions cannot be enforced there and this verifier deliberately leaves them alone; the
+plaintext copy of the labels that arrives under /tests is closed to the unprivileged user on
+a best-effort basis, and whether that succeeded is logged rather than allowed to fail the
+run. Root alone runs pytest and decides the reward from its exit status, and the shipped
+export is left read-only to the build user. Verified by four cheat arms — crates that read
+either copy of the labels, one that overwrites test_outputs.py, one that writes reward.txt
+directly — each of which compiles and then fails on permissions, scoring 0.
+
 tests/test_outputs.py then runs six checks: the shipped export is unaltered (sha256), the
 schema, one-to-one coverage of the quoted pumps, that lives are numeric and physically
 plausible, that predictions are a real spread rather than a constant, and that R2 against
-tests/golden/test_labels.csv reaches 0.33. The golden labels live in the verifier image and
-are never present in the agent environment, so hardcoding is impossible by construction.
-Only pytest is installed, so the CSV reading and the R2 come from the standard library.
+tests/golden/test_labels.csv reaches 0.33. That bar sits between the strongest wrong
+approach and the weakest correct one, both established by sweeping each route across
+several generator seeds: treating the censored records as failures peaks at 0.2969, while
+the weakest passing route (cohort-based) reaches 0.3563 and the EM route 0.4843, with the
+threshold frozen against the tightest seed. Only pytest is installed, so the CSV reading
+and the R2 come from the standard library.
 """
 
 relevant_experience = """

@@ -6,7 +6,7 @@ clean release build. We check that the file exists, its schema, that it covers e
 quoted pump exactly once, that the values are numeric and physically plausible, that
 the predictions are a real spread rather than a constant, that the shipped export was
 not edited, and that the R2 against the run-to-failure lives in
-/tests/golden/test_labels.csv (never present in the agent environment) reaches the 0.33
+/opt/golden/test_labels.csv (never present in the agent environment) reaches the 0.33
 stated in the task.
 
 Only pytest is installed, so the CSV reading and the R2 come from the standard library
@@ -21,7 +21,9 @@ import pathlib
 import pytest
 
 PRED_PATH = pathlib.Path("/app/predictions.csv")
-LABELS_PATH = pathlib.Path("/tests/golden/test_labels.csv")
+# Read from the root-only copy baked into the verifier image, not the /tests mount: the
+# agent's crate is rebuilt and run in this container, and only this path is closed to it.
+LABELS_PATH = pathlib.Path("/opt/golden/test_labels.csv")
 TEST_FEATURES = pathlib.Path("/app/data/test_features.csv")
 R2_BAR = 0.33
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reference model for the pump seal-life bar.
+# Reference solution for pump_life.
 #
-# The catch is what `runtime_days` means. For a pump with still_running = 1 the
+# The catch is what runtime_days means. For a pump with still_running = 1 the
 # seal had NOT failed yet, so that number is a lower bound on its life, not the
 # life. Nearly 38% of the export is in that state. Fit on the changed-out pumps
 # only and you are fitting the pumps that died young, which lands around R2 0.28
@@ -12,7 +12,7 @@ set -euo pipefail
 # Worse, the install waves were not random: the long-lived duty types and the
 # gentler fluids came online late, so they have short windows and are the most
 # likely to still be running. Throwing the censored rows away therefore bends the
-# coefficients, not just the intercept — it under-credits exactly the setups that
+# coefficients, not just the intercept. It under-credits exactly the setups that
 # last longest.
 #
 # So: log-normal accelerated failure time, fitted by EM over every row. Censored
@@ -108,11 +108,6 @@ fn norm_cdf(x: f64) -> f64 {
     0.5 + sign * (0.5 - upper)
 }
 
-fn fit(x: &DenseMatrix<f64>, y: &[f64]) -> Result<Vec<f64>, Box<dyn Error>> {
-    let m = LinearRegression::fit(x, &y.to_vec(), Default::default())?;
-    Ok(m.predict(x)?)
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     let train = read("/app/data/train.csv")?;
     let quote = read("/app/data/test_features.csv")?;
@@ -156,7 +151,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         writeln!(out, "{},{:.2}", p.pump_id, mu.exp())?;
     }
     println!("wrote /app/predictions.csv ({} pumps)", quote.len());
-    let _ = fit;
     Ok(())
 }
 RUST
