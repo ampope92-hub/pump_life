@@ -154,7 +154,15 @@ timeout_sec = 1800
 environment_mode = "separate"
 
 [agent]
-timeout_sec = 3600
+# 2 hours. The 60-minute budget was the binding constraint, not the problem: both Opus
+# trials hit AgentTimeoutError with src/main.rs still the stub, one of them cut off
+# mid-way through writing a coverage-calibration script. The work here is a censored
+# maximum-likelihood fit with a scale model, built from scratch in a language with no
+# survival library and no error function, and the traces show agents needing most of an
+# hour on the analysis before they start writing Rust at all. Task requirements: floor
+# 1800, ceiling 18000, "starving a long one causes failures that look like difficulty
+# but are really budget".
+timeout_sec = 7200
 
 [environment]
 network_mode = "no-network"
