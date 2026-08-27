@@ -100,23 +100,49 @@ building, so cargo cannot mistake an uploaded source older than the image for on
 already compiled and quietly run the skeleton instead.
 
 Rebuilding the agent's crate means the verifier executes code the agent wrote, so that step
-is the one thing it does not do as root: test.sh hands the crate to an unprivileged user and
-runs the build under it. The graded answer key is baked into the verifier image at
-/opt/golden, readable only by root. Harbor owns the /tests and /logs mounts at runtime, so
-permissions cannot be enforced there and this verifier deliberately leaves them alone; the
-plaintext copy of the labels that arrives under /tests is closed to the unprivileged user on
-a best-effort basis, and whether that succeeded is logged rather than allowed to fail the
-run. Root alone runs pytest and decides the reward from its exit status, and the shipped
-export is left read-only to the build user. Verified by four cheat arms — crates that read
-either copy of the labels, one that overwrites test_outputs.py, one that writes reward.txt
-directly — each of which compiles and then fails on permissions, scoring 0.
+is the one thing it does not do as root. test.sh hands the crate to an unprivileged build
+user and runs it through setpriv with supplementary groups cleared and no-new-privileges
+set, so neither an inherited group nor a setuid binary can widen what that code reaches.
+The graded answer key is baked into the image at /opt/golden, readable only by root. The
+whole /tests mount — the verifier's own code as well as the plaintext label copy that
+arrives there — is closed to the build user before anything untrusted starts, and if it is
+still reachable the run is abandoned with reward 0 rather than graded: a reachable /tests is
+one the agent can read the answers out of, or whose test file it can rewrite before pytest
+reads it. The build runs in its own session, and its entire process group is torn down, then
+every process the build user still owns is swept, before pytest runs and before the reward
+is written — so nothing the agent started is alive during grading and no double-forked child
+can rewrite the reward after it is computed. /logs is left to Harbor, which owns it; the
+reward is simply written there last, once nothing hostile is running. Root alone runs pytest
+and decides the reward from its exit status, and the shipped export is left read-only to the
+build user. Verified by cheat arms — crates that read either copy of the labels, one that
+overwrites test_outputs.py, one that writes reward.txt directly — each of which compiles and
+then fails on permissions, scoring 0.
 
 tests/test_outputs.py runs eight checks: the shipped export is unaltered (sha256), the
 schema is exactly pump_id,life_days,service_days, coverage of the quoted pumps is
 one-to-one, both columns are finite and physically plausible with the interval no later than
 the expected life, neither column is a constant, R2 against the withheld lives reaches 0.36,
-the share of pumps that failed before their quoted interval is within [6%,15%] of the 10%
+the share of pumps that failed before their quoted interval is within [8%,12%] of the 10%
 asked for, and that same share holds within [5.5%,14.5%] in each vibration tercile.
+
+The fleet tolerance is set from measured spread rather than taste, and it is stated in
+instruction.md so it is a rule the agent is given rather than one it has to guess. Across
+10 seeds the reference route's own fleet coverage runs 9.02-11.18% — its estimation error,
+an order of magnitude above the 0.39pp binomial noise at n=6000 — while the same solution
+aiming at the 14th percentile instead of the 10th runs 12.63-15.50%. A +/-2 point band
+admits every reference run and rejects every wrong-quantile run, with about 0.6pp of clear
+air on either side of the nearest edge. The wider band this replaces did not: a solution
+identical to the reference except for that one constant scored reward 1, which is what the
+`oracle_wrongq` arm now exists to catch. Adjacent quantiles closer than that (a 12th-
+percentile solution) are inside the band by design — the reference route's own spread is
+wider than the gap between neighbouring quantiles, so a tolerance tight enough to exclude
+them would reject correct solutions.
+
+The per-tercile band does a different job and is deliberately looser: it rejects solutions
+whose interval does not track vibration at all. A constant-sigma solution lands at 2.40% in
+the smoothest third against 14.48% in the roughest, and a fixed multiple of predicted life
+at 1.55%, while the reference route stays inside [5.5%,14.5%] in every tercile on every
+seed.
 
 The band check is the load-bearing one and was designed against attack rather than assumed.
 Realised coverage fleet-wide is a proxy a wrong answer can also satisfy, so it was attacked
@@ -150,10 +176,17 @@ library has no error function and there is no survival-analysis crate on the box
 """
 
 [verifier]
+# Nothing is fetched at grade time; every verifier dependency is baked into
+# tests/Dockerfile, so the grading phase stays offline.
+network_mode = "no-network"
 timeout_sec = 1800
 environment_mode = "separate"
 
 [agent]
+# Solved offline by design: the crates are pre-fetched and pinned in Cargo.lock, and
+# network access would let the agent fetch a survival/ML library instead of
+# implementing the fit, which is the work being measured.
+network_mode = "no-network"
 # 2 hours. The 60-minute budget was the binding constraint, not the problem: both Opus
 # trials hit AgentTimeoutError with src/main.rs still the stub, one of them cut off
 # mid-way through writing a coverage-calibration script. The work here is a censored
@@ -165,7 +198,10 @@ environment_mode = "separate"
 timeout_sec = 7200
 
 [environment]
-network_mode = "no-network"
+# Required "public" on every task, offline ones included: the image is built and the
+# agent harness installed during this phase and that install needs the network. It says
+# nothing about the agent or the verifier, both of which are closed below/above.
+network_mode = "public"
 build_timeout_sec = 900
 cpus = 2
 memory_mb = 6144

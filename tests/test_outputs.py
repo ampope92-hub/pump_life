@@ -38,7 +38,9 @@ TEST_FEATURES = pathlib.Path("/app/data/test_features.csv")
 
 R2_BAR = 0.36
 TARGET_RATE = 0.10
-COVERAGE_LO, COVERAGE_HI = 0.06, 0.15
+# Tolerance around the target, stated in instruction.md so it is a rule the agent is given
+# rather than one it has to guess. Calibration behind the numbers is in task.toml, not here.
+COVERAGE_LO, COVERAGE_HI = 0.08, 0.12
 BAND_LO, BAND_HI = 0.055, 0.145
 
 # frozen at task-build time; the shipped export must not be altered
