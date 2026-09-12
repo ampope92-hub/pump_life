@@ -67,6 +67,13 @@ RUN chown -R runner:runner /app /usr/local/cargo \
 COPY golden /opt/golden
 RUN chmod 700 /opt/golden && chmod 600 /opt/golden/*
 
+# The holdout batch. test.sh swaps this in for /app/data and runs the agent's binary a second
+# time, which is what proves the program refits at run time instead of returning constants
+# pasted into its source. Same root-only treatment as the answer key: its train/test_features
+# are copied into /app/data for that run, but test_labels.csv is never readable by the crate.
+COPY holdout /opt/holdout
+RUN chmod 700 /opt/holdout && chmod 600 /opt/holdout/*
+
 COPY . /tests/
 
 WORKDIR /app

@@ -20,8 +20,42 @@ author_name = "anonymous"
 author_email = "anonymous"
 
 difficulty_explanation = """
-Two quantities are graded and one defect in the data damages both, which is what makes this
-harder than either half alone.
+Two quantities are graded, and before either can be fitted the export has to be read for
+what it is. The hard part is that the maintenance system offers a shortcut that looks
+better than the correct answer on every check the agent can run.
+
+`cmms_expected_life_days` is the planner's expected seal life. The data dictionary states
+where the number comes from: set from the duty/fluid table at commissioning, and reconciled
+against the work order once a seal is actually changed. So on the training rows whose seal
+has been changed it is the realised life to within a few days, and on the rows still running
+it is a table lookup. On the quote batch, where nothing has been changed out yet, it is the
+table lookup for every row — and that table predates condition monitoring, so it cannot see
+vibration, temperature or speed and has no notion of pump-to-pump scatter.
+
+What makes this the load-bearing difficulty is that the column appears to DISSOLVE the
+task's central problem. The intended crux is the right-censoring below. An agent that finds
+this field has a ready-made life for the rows that failed and a plausible number for the
+rows still running, so the censoring stops looking like something that needs a survival fit
+and starts looking like a gap it has already filled in. Filling it in that way and running an
+ordinary least-squares fit scores R2 0.308 against a 0.36 bar and runs 16.2% late in the
+roughest vibration third against a 14.5% ceiling. Shipping the column directly scores 0.167.
+Carrying it as a feature scores 0.263 with 48.5% overall coverage.
+
+And no validation the agent can build will say so. The only training rows whose true life is
+observable are the ones whose seal has already been changed — which is exactly the set the
+reconciliation contaminated. Hold half the training data out and score on those rows and the
+contaminated fit reports R2 0.957, the raw column reports 0.996, and the correct censored
+model reports about zero, because it predicts an unconditional mean against a subset selected
+for dying young. The agent's own careful measurement points hard at the wrong answer. The way
+out is not a validation trick but reading where the number comes from.
+
+`bearing_temp_rise_c` is the same shape on a smaller scale: condition monitoring's last
+survey before the seal came out, so on the failed training rows it carries the pump's
+end-of-life state, against a routine mid-life reading on the quote batch. Carried as a
+feature it scores -0.917.
+
+Underneath that sits the original problem, and one defect in the data damages both graded
+quantities.
 
 The export records runtime_days for every pump, and no column says whether that run ended.
 A pump whose seal was changed out has run for less time than it has been installed; one
@@ -118,12 +152,33 @@ build user. Verified by cheat arms — crates that read either copy of the label
 overwrites test_outputs.py, one that writes reward.txt directly — each of which compiles and
 then fails on permissions, scoring 0.
 
-tests/test_outputs.py runs eight checks: the shipped export is unaltered (sha256), the
+tests/test_outputs.py runs twelve checks: the shipped export is unaltered (sha256), the
 schema is exactly pump_id,life_days,service_days, coverage of the quoted pumps is
 one-to-one, both columns are finite and physically plausible with the interval no later than
 the expected life, neither column is a constant, R2 against the withheld lives reaches 0.36,
 the share of pumps that failed before their quoted interval is within [8%,12%] of the 10%
 asked for, and that same share holds within [5.5%,14.5%] in each vibration tercile.
+
+The agent's crate is then run a SECOND time, against a batch it has never seen. Everything
+above grades the quote batch that ships inside the agent's own image, so a program could fit
+once, paste the resulting numbers into the Rust source as constants and score full marks
+without reading a CSV at run time. test.sh moves the first output aside root-only, swaps
+/app/data for a holdout batch drawn from the same generator on a different seed (baked into
+the verifier image at /opt/holdout, never present in any container the agent can reach), runs
+the same binary again, and then restores the agent's export byte-for-byte so the sha256 check
+still tests exactly what the agent left. pump_ids run PM00000.. in both batches, so a program
+emitting stored predictions produces the right ids carrying values fitted to the wrong pumps.
+Four checks grade that run: it quotes exactly the pumps in the batch it was given, R2 stays
+above 0.30, realised coverage stays within [6%,14%], and fewer than half the pumps get
+byte-identical quotes across two different batches. Those bars are deliberately slacker than
+the graded batch's — this run exists to show the program fits from what it is handed, not to
+grade the model twice, and a batch never calibrated against should not fail a good solution on
+ordinary seed variation. There is room for that slack: across 8 generator seeds the reference
+route scores R2 0.449 and coverage 9.97% with every seed inside the strict bars, while a
+constants-only program scores a negative R2. The `cheat_frozen_predictions` arm plants exactly
+that program — the honest solution run once, its output frozen into the source — and it must
+score 0. Requiring the program to work on other batches in this format is stated in
+instruction.md, so it is a rule the agent is given rather than one it has to infer.
 
 The fleet tolerance is set from measured spread rather than taste, and it is stated in
 instruction.md so it is a rule the agent is given rather than one it has to guess. Across
@@ -157,6 +212,19 @@ is 6000 pumps so that a tercile carries 2000 — coverage is a binomial count, a
 its sampling noise is ~0.7 points, which keeps every band edge about three standard
 deviations from both the correct route and the wrong ones. Only pytest is installed, so the
 CSV reading and the arithmetic come from the standard library.
+
+Two further arms check that the graded bars discriminate, rather than only that cheating is
+blocked. Both are the reference solution changed in one place and both run through the real
+verifier container. One quotes the interval at the wrong quantile: it gets the life column
+right and still scores 0, which is what makes the interval a second axis rather than a
+restatement of the first. The other fills the censored rows with cmms_expected_life_days and
+drops the survival fit — the single change an honest holdout built on train.csv recommends,
+because that holdout scores it 0.957 against the correct model's ~0. It scores 0 here. If
+either had scored 1 the corresponding axis would not exist.
+
+solution/generate_data.py regenerates all three CSVs byte for byte and solution/calibrate.py
+reproduces the route table and the holdout ranking, so the calibration is re-runnable rather
+than asserted.
 """
 
 relevant_experience = """
@@ -179,7 +247,10 @@ library has no error function and there is no survival-analysis crate on the box
 # Nothing is fetched at grade time; every verifier dependency is baked into
 # tests/Dockerfile, so the grading phase stays offline.
 network_mode = "no-network"
-timeout_sec = 1800
+# Two runs of the agent's crate now happen here, not one: the graded quote batch and then
+# the holdout batch that proves the program refits rather than returning constants. Only the
+# first compiles, but 1800 left no headroom for a slow build plus two fits.
+timeout_sec = 3600
 environment_mode = "separate"
 
 [agent]

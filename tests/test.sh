@@ -67,14 +67,63 @@ BUILD_PGID="$(sed 's/.*) //' /proc/$BUILD_PID/stat 2>/dev/null | awk '{print $3}
 wait "$BUILD_PID"
 echo "predictor exit status: $?"
 
-# Nothing the agent started may be alive while pytest runs or while the reward is written.
-# Kill the build's whole process group, then sweep anything the build user still owns —
-# `kill -9 -1` as `runner` reaches exactly that user's processes and nothing of root's.
+# Reap run 1 before anything else starts. A double-forked child left alive from this run
+# would otherwise still be around during the holdout run below, where it could write
+# /app/predictions.csv and pass off run 1's numbers as the holdout's.
 if [ -n "${BUILD_PGID:-}" ]; then
   kill -TERM "-$BUILD_PGID" 2>/dev/null || true
   kill -KILL "-$BUILD_PGID" 2>/dev/null || true
 fi
 as_runner bash -c 'kill -9 -1' 2>/dev/null || true
+
+# ---------------------------------------------------------------------------------------
+# Second run, on a batch the agent has never seen.
+#
+# Everything graded so far comes from the quote batch that ships in the agent's own image, so
+# a program could fit once, paste the resulting numbers into the Rust source as constants and
+# score full marks without reading a CSV at run time. So the same binary is run again against
+# a holdout batch drawn from the same process with a different seed, baked into this image at
+# /opt/holdout and never present in any container the agent can reach.
+#
+# pump_ids are PM00000.. in both batches, so a program returning saved predictions emits the
+# right ids carrying values fitted to the wrong pumps: R2 and coverage both collapse. A
+# program that actually reads and fits from /app/data scores normally.
+#
+# The agent's own export is put back byte-for-byte afterwards, so test_shipped_data_unmodified
+# still checks exactly what the agent left behind.
+mv /app/predictions.csv /opt/run_quote.csv 2>/dev/null || true
+# Written by runner, so the move keeps runner's ownership: hand it to root before any more
+# agent code runs, or the holdout run can rewrite the quote batch's graded output.
+chown root:root /opt/run_quote.csv 2>/dev/null || true
+chmod 600 /opt/run_quote.csv 2>/dev/null || true
+
+cp -a /app/data /opt/agent_data
+cp -f /opt/holdout/train.csv /app/data/train.csv
+cp -f /opt/holdout/test_features.csv /app/data/test_features.csv
+chmod -R a-w /app/data
+rm -f /app/predictions.csv
+
+setsid timeout -k 30 1200 \
+  setpriv --clear-groups --no-new-privs --reuid runner --regid runner \
+  bash -c 'cd /app/predictor && cargo run --release --offline' &
+HOLDOUT_PID=$!
+HOLDOUT_PGID="$(sed 's/.*) //' /proc/$HOLDOUT_PID/stat 2>/dev/null | awk '{print $3}')"
+wait "$HOLDOUT_PID"
+echo "predictor exit status on holdout batch: $?"
+if [ -n "${HOLDOUT_PGID:-}" ]; then
+  kill -TERM "-$HOLDOUT_PGID" 2>/dev/null || true
+  kill -KILL "-$HOLDOUT_PGID" 2>/dev/null || true
+fi
+as_runner bash -c 'kill -9 -1' 2>/dev/null || true
+
+mv /app/predictions.csv /opt/run_holdout.csv 2>/dev/null || true
+chown root:root /opt/run_holdout.csv 2>/dev/null || true
+
+# Restore the agent's export exactly as collected, then close the graded outputs to runner.
+rm -f /app/data/train.csv /app/data/test_features.csv
+cp -a /opt/agent_data/. /app/data/
+chmod -R a-w /app/data
+chmod 600 /opt/run_holdout.csv 2>/dev/null || true
 
 # -P keeps the working directory (/app, per the Dockerfile's WORKDIR) off sys.path. The
 # crate runs as `runner` and writes into /app, so without this it can drop an /app/pytest.py

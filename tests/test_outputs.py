@@ -30,7 +30,12 @@ import pathlib
 
 import pytest
 
-PRED_PATH = pathlib.Path("/app/predictions.csv")
+# test.sh runs the agent's crate twice and moves each output aside root-only: first on the
+# quote batch that shipped in the agent's image, then on a holdout batch it has never seen.
+PRED_PATH = pathlib.Path("/opt/run_quote.csv")
+HOLDOUT_PRED_PATH = pathlib.Path("/opt/run_holdout.csv")
+HOLDOUT_LABELS_PATH = pathlib.Path("/opt/holdout/test_labels.csv")
+HOLDOUT_FEATURES = pathlib.Path("/opt/holdout/test_features.csv")
 # Read from the root-only copy baked into the verifier image, not the /tests mount: the
 # agent's crate is rebuilt and run in this container, and only this path is closed to it.
 LABELS_PATH = pathlib.Path("/opt/golden/test_labels.csv")
@@ -43,9 +48,17 @@ TARGET_RATE = 0.10
 COVERAGE_LO, COVERAGE_HI = 0.08, 0.12
 BAND_LO, BAND_HI = 0.055, 0.145
 
+# Bars for the holdout run. Deliberately slacker than the graded batch's: this run exists to
+# show the program fits from whatever is in /app/data, not to grade the model a second time,
+# and a batch the author never calibrated against should not be able to fail a good solution
+# on ordinary seed-to-seed variation. A program returning constants fitted to the quote batch
+# misses by far more than this slack — its R2 goes negative.
+HOLDOUT_R2_BAR = 0.30
+HOLDOUT_COVERAGE_LO, HOLDOUT_COVERAGE_HI = 0.06, 0.14
+
 # frozen at task-build time; the shipped export must not be altered
-TEST_FEATURES_SHA = "aed6f3be5e4f98edf6bad88dcf5db3b9e22b9311184abe627e902bed6de0bc01"
-TRAIN_SHA = "3f384ebf005c404cf498730ddee45716e8b844ab856722b3f2cbb7fd965fd1ab"
+TEST_FEATURES_SHA = "e648a5bd81e823be29f44ea255b89a405ee7e76ab4e1a5932ae522d1381a0181"
+TRAIN_SHA = "4fddcedf873d6f7e599e00262a4941fcc002b99b1ae3ae9f814a1e11b42aae34"
 
 
 def _read_csv(path):
@@ -187,3 +200,66 @@ def test_service_interval_coverage_within_vibration_bands(quoted, labels, vibrat
             f"outside [{BAND_LO:.1%}, {BAND_HI:.1%}] — the interval does not track how "
             "much seal life varies across the fleet"
         )
+
+
+@pytest.fixture(scope="session")
+def holdout_quoted():
+    """The same binary's output for the holdout batch, as {pump_id: (life_days, service_days)}."""
+    assert HOLDOUT_PRED_PATH.exists(), (
+        "the predictor wrote no /app/predictions.csv when it was run against the holdout "
+        "batch — it must read and fit from the CSVs in /app/data at run time"
+    )
+    _, rows = _read_csv(HOLDOUT_PRED_PATH)
+    return {row[0]: (float(row[1]), float(row[2])) for row in rows}
+
+
+@pytest.fixture(scope="session")
+def holdout_labels():
+    _, rows = _read_csv(HOLDOUT_LABELS_PATH)
+    return {row[0]: float(row[1]) for row in rows}
+
+
+def test_holdout_covers_every_pump(holdout_quoted, holdout_labels):
+    """Run on an unseen batch, the predictor quotes every pump in it exactly once."""
+    assert set(holdout_quoted) == set(holdout_labels), (
+        "the holdout run did not quote exactly the pumps in that batch — the predictor is "
+        "not reading pump_ids from the test_features.csv it was given"
+    )
+
+
+def test_holdout_r2(holdout_quoted, holdout_labels):
+    """Expected life still tracks the truth on a batch the agent never saw."""
+    ids = sorted(holdout_labels)
+    r2 = _r2([holdout_quoted[i][0] for i in ids], [holdout_labels[i] for i in ids])
+    assert r2 >= HOLDOUT_R2_BAR, (
+        f"life_days R2 on the holdout batch is {r2:.4f}, below {HOLDOUT_R2_BAR}. The same "
+        "program scored the quote batch, so this is a model fitted to one batch and reused "
+        "rather than refitted from the CSVs it was given"
+    )
+
+
+def test_holdout_service_interval_coverage(holdout_quoted, holdout_labels):
+    """The quoted interval still holds its failure rate on an unseen batch."""
+    ids = sorted(holdout_labels)
+    failed_early = sum(1 for i in ids if holdout_labels[i] < holdout_quoted[i][1])
+    rate = failed_early / len(ids)
+    assert HOLDOUT_COVERAGE_LO <= rate <= HOLDOUT_COVERAGE_HI, (
+        f"{rate:.3%} of holdout pumps failed before their quoted service age, outside "
+        f"[{HOLDOUT_COVERAGE_LO:.1%}, {HOLDOUT_COVERAGE_HI:.1%}] — the interval does not "
+        "come from a fit to the batch the program was actually given"
+    )
+
+
+def test_holdout_predictions_differ_from_quote_batch(quoted, holdout_quoted):
+    """Two different batches do not produce the same numbers.
+
+    pump_ids run PM00000.. in both batches, so a program that writes predictions baked into
+    its source emits an identical file both times. Refitting cannot reproduce it.
+    """
+    shared = sorted(set(quoted) & set(holdout_quoted))
+    assert shared, "the two runs share no pump_ids — cannot compare"
+    identical = sum(1 for i in shared if quoted[i] == holdout_quoted[i])
+    assert identical < len(shared) * 0.5, (
+        f"{identical} of {len(shared)} pumps got byte-identical quotes on two different "
+        "batches — the predictions are constants in the source, not a fit to the input"
+    )
